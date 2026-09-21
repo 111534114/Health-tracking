@@ -1,11 +1,11 @@
 {
-    "name": "medication_app",
-    "short_name": "medication_app",
+    "name": "服藥提醒與健康紀錄",
+    "short_name": "服藥提醒",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "服藥提醒、服藥紀錄與健康紀錄",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
