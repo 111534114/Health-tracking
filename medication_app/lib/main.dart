@@ -458,6 +458,7 @@ class AppStore extends ChangeNotifier {
       '${m.id}:${dayKey(DateTime.now())}:$time';
 
   Future<void> snooze(Medicine m, int time, Duration delay) async {
+    if (kIsWeb) throw StateError('網頁版不支援服藥通知，請使用 iOS App');
     if (!notificationPermission) throw StateError('請先在 iPhone 設定中允許通知');
     snoozes.removeWhere((_, until) => !until.isAfter(DateTime.now()));
     final key = doseKey(m, time);
@@ -651,6 +652,13 @@ class HomePage extends StatelessWidget {
               ),
             ),
           ),
+          if (kIsWeb)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('網頁版可記錄資料；iPhone 服藥通知需使用 iOS App。資料只保存在目前瀏覽器。'),
+              ),
+            ),
           const SizedBox(height: 20),
           if (doses.isEmpty)
             const EmptyState(Icons.medication_outlined, '還沒有藥物，請到「藥物」新增。'),
@@ -749,12 +757,13 @@ class HomePage extends StatelessWidget {
                               ),
                             ],
                           ),
-                          TextButton.icon(
-                            onPressed: () =>
-                                snoozeDose(context, dose.$1, dose.$2),
-                            icon: const Icon(Icons.snooze),
-                            label: const Text('稍後提醒'),
-                          ),
+                          if (!kIsWeb)
+                            TextButton.icon(
+                              onPressed: () =>
+                                  snoozeDose(context, dose.$1, dose.$2),
+                              icon: const Icon(Icons.snooze),
+                              label: const Text('稍後提醒'),
+                            ),
                         ],
                       ),
                   ],
@@ -1329,7 +1338,9 @@ class _ProfilePageState extends State<ProfilePage> {
         SwitchListTile(
           title: const Text('服藥提醒'),
           subtitle: Text(
-            widget.store.notificationPermission
+            kIsWeb
+                ? '網頁版不提供背景服藥通知'
+                : widget.store.notificationPermission
                 ? '按設定時間發送通知'
                 : '請在 iPhone 設定中允許通知',
           ),

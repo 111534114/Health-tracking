@@ -23,3 +23,7 @@ flutter run
 此專案以 iPhone 為 MVP 目標，iOS 最低版本為 15。首次啟動需允許通知；若先前拒絕，可在「我的」開啟 iPhone 通知設定，返回 App 後會重新同步提醒。每日最多設定 60 個固定服藥時間，另保留 4 個稍後提醒名額，避免超過 iOS 的待發通知上限。補藥通知在藥量由高於門檻降至門檻以下時發送一次。
 
 在 Mac 上以 Xcode 設定自己的 Bundle Identifier 與簽署團隊，接上 iPhone 後執行 `flutter run`。通知需在實機上確認準時送達；此專案在 Windows 環境完成程式分析與單元測試，無法在此環境編譯或驗證 iOS 實機通知。
+
+## 網頁版
+
+`main` 分支會透過 GitHub Actions 建置並部署到 GitHub Pages。公開網址為 `https://111534114.github.io/Health-tracking/`。網頁版可在任何有網路的裝置開啟，資料只儲存在各裝置的瀏覽器中，不會跨裝置同步；清除瀏覽器資料可能刪除紀錄。iPhone 背景服藥通知仍需使用 iOS App。
