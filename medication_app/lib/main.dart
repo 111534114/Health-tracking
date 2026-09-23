@@ -7,13 +7,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
+import 'package:url_launcher/url_launcher.dart';
 
 import 'web_preferences_stub.dart'
     if (dart.library.js_interop) 'web_preferences_web.dart';
+import 'medicine_ocr_stub.dart' if (dart.library.io) 'medicine_ocr_mobile.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -596,6 +601,20 @@ class Dashboard extends StatelessWidget {
             onTap: () => open(context, SymptomPage(store: store)),
           ),
           ActionCard(
+            icon: Icons.camera_alt,
+            color: const Color(0xffffedd7),
+            title: '拍照看藥品',
+            subtitle: '拍藥袋或藥盒，搜尋一般藥品資訊',
+            onTap: () => open(context, const MedicineCameraPage()),
+          ),
+          ActionCard(
+            icon: Icons.local_hospital,
+            color: const Color(0xffe4f1fb),
+            title: '附近家醫科',
+            subtitle: '依目前位置查看附近診所',
+            onTap: () => open(context, const NearbyClinicPage()),
+          ),
+          ActionCard(
             icon: Icons.favorite,
             color: const Color(0xffffe2e3),
             title: '我的健康',
@@ -1063,6 +1082,372 @@ class DoseHistoryPage extends StatelessWidget {
                 )
                 .toList(),
     ),
+  );
+}
+
+class MedicineCameraPage extends StatefulWidget {
+  const MedicineCameraPage({super.key});
+  @override
+  State<MedicineCameraPage> createState() => _MedicineCameraPageState();
+}
+
+class _MedicineCameraPageState extends State<MedicineCameraPage> {
+  Uint8List? photo;
+  bool working = false;
+  String status = '請拍攝藥袋或藥盒，辨識後會讓你確認搜尋文字。';
+  Future<void> takePhoto() async {
+    final image = await ImagePicker().pickImage(
+      source: ImageSource.camera,
+      imageQuality: 82,
+      maxWidth: 1800,
+    );
+    if (image == null || !mounted) return;
+    setState(() {
+      working = true;
+      status = '正在辨識藥品包裝文字…';
+    });
+    photo = await image.readAsBytes();
+    var recognized = '';
+    try {
+      recognized = await recognizeMedicineText(image);
+    } catch (_) {}
+    if (!mounted) return;
+    final candidate = medicineSearchCandidate(recognized);
+    setState(() {
+      working = false;
+      status = candidate.isEmpty ? '請輸入藥袋上的藥名再搜尋。' : '已辨識文字，請先核對藥品名稱。';
+    });
+    await confirmAndSearch(candidate);
+  }
+
+  Future<void> confirmAndSearch(String candidate) async {
+    final controller = TextEditingController(text: candidate);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('確認藥品名稱'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(fontSize: 20),
+          decoration: const InputDecoration(labelText: '藥袋／藥盒上的藥名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('開啟 Google 搜尋'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null || value.isEmpty) return;
+    await launchUrl(
+      Uri.https('www.google.com', '/search', {'q': '$value 藥品'}),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AppScaffold(
+    title: '拍照看藥品',
+    subtitle: '拍照後辨識並搜尋藥品名稱',
+    children: [
+      const InfoBox('請拍藥袋、藥盒或有清楚藥名的包裝。不要只拍藥丸外觀；搜尋結果也要再核對藥袋或詢問醫師、藥師。'),
+      const SizedBox(height: 18),
+      if (photo != null)
+        ClipRRect(
+          borderRadius: BorderRadius.circular(22),
+          child: Image.memory(photo!, height: 260, fit: BoxFit.cover),
+        ),
+      if (photo != null) const SizedBox(height: 18),
+      BigButton(
+        text: working ? '正在辨識…' : '拍攝藥袋／藥盒',
+        icon: Icons.camera_alt,
+        onPressed: working ? null : takePhoto,
+      ),
+      const SizedBox(height: 16),
+      Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: const Color(0xffd9f2ed),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.search, color: teal, size: 38),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                status,
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 20),
+      const Text(
+        '搜尋結果來自 Google 網頁，可能包含非官方或不完整資訊。請勿只依搜尋結果自行停藥、換藥或改變用量。',
+        style: TextStyle(fontSize: 17, color: Colors.black54),
+      ),
+    ],
+  );
+}
+
+String medicineSearchCandidate(String recognized) {
+  final ignored = RegExp(r'^(藥品|藥名|姓名|用法|用量|次數|日期|醫院|診所)[:：]?$');
+  final lines = recognized
+      .split(RegExp(r'[\r\n]+'))
+      .map((e) => e.trim())
+      .where((e) => e.length >= 2 && e.length <= 50 && !ignored.hasMatch(e))
+      .toList();
+  lines.sort((a, b) {
+    final aScore =
+        (RegExp(r'[A-Za-z]').hasMatch(a) ? 2 : 0) +
+        (RegExp(r'\d+\s*(mg|ml)', caseSensitive: false).hasMatch(a) ? 1 : 0);
+    final bScore =
+        (RegExp(r'[A-Za-z]').hasMatch(b) ? 2 : 0) +
+        (RegExp(r'\d+\s*(mg|ml)', caseSensitive: false).hasMatch(b) ? 1 : 0);
+    return bScore.compareTo(aScore);
+  });
+  return lines.isEmpty ? '' : lines.first;
+}
+
+class Clinic {
+  const Clinic({
+    required this.name,
+    required this.lat,
+    required this.lon,
+    required this.distance,
+    this.address = '',
+    this.speciality = '',
+  });
+  final String name, address, speciality;
+  final double lat, lon, distance;
+}
+
+class NearbyClinicPage extends StatefulWidget {
+  const NearbyClinicPage({super.key});
+  @override
+  State<NearbyClinicPage> createState() => _NearbyClinicPageState();
+}
+
+class _NearbyClinicPageState extends State<NearbyClinicPage> {
+  bool loading = true;
+  String? error;
+  String category = '家醫科';
+  Position? position;
+  List<Clinic> clinics = [];
+  @override
+  void initState() {
+    super.initState();
+    findClinics();
+  }
+
+  Future<void> findClinics() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) throw '請開啟位置服務';
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        throw '需要位置權限才能搜尋附近診所';
+      }
+      position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
+      await loadOsm();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          error = e.toString();
+          loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> loadOsm() async {
+    final p = position!;
+    final query =
+        '[out:json][timeout:20];(nwr["healthcare"~"clinic|doctor"](around:5000,${p.latitude},${p.longitude});nwr["amenity"="clinic"](around:5000,${p.latitude},${p.longitude});nwr["amenity"="doctors"](around:5000,${p.latitude},${p.longitude}););out center tags;';
+    final response = await http.post(
+      Uri.parse('https://overpass-api.de/api/interpreter'),
+      body: {'data': query},
+    );
+    if (response.statusCode != 200) throw '附近院所資料目前無法載入';
+    final elements = (jsonDecode(response.body)['elements'] as List)
+        .cast<Map<String, dynamic>>();
+    final seen = <String>{};
+    final found = <Clinic>[];
+    for (final element in elements) {
+      final tags = Map<String, dynamic>.from(element['tags'] as Map? ?? {});
+      final name = (tags['name:zh'] ?? tags['name'] ?? '').toString().trim();
+      if (name.isEmpty || !seen.add(name)) continue;
+      final center = element['center'] as Map?;
+      final lat = (element['lat'] ?? center?['lat']) as num?;
+      final lon = (element['lon'] ?? center?['lon']) as num?;
+      if (lat == null || lon == null) continue;
+      final address = [
+        tags['addr:city'],
+        tags['addr:district'],
+        tags['addr:street'],
+        tags['addr:housenumber'],
+      ].where((e) => e != null).join('');
+      found.add(
+        Clinic(
+          name: name,
+          lat: lat.toDouble(),
+          lon: lon.toDouble(),
+          distance: Geolocator.distanceBetween(
+            p.latitude,
+            p.longitude,
+            lat.toDouble(),
+            lon.toDouble(),
+          ),
+          address: address,
+          speciality: (tags['healthcare:speciality'] ?? '').toString(),
+        ),
+      );
+    }
+    found.sort((a, b) => a.distance.compareTo(b.distance));
+    if (mounted) {
+      setState(() {
+        clinics = found.take(20).toList();
+        loading = false;
+      });
+    }
+  }
+
+  List<Clinic> get filtered {
+    if (category == '家醫科') return clinics;
+    const words = {
+      '牙科': ['dental', 'dentist', '牙'],
+      '眼科': ['ophthalmology', '眼'],
+      '耳鼻喉科': ['otolaryngology', 'ent', '耳鼻喉'],
+      '骨科': ['orthopaedics', '骨'],
+      '皮膚科': ['dermatology', '皮膚'],
+    };
+    final keys = words[category] ?? [];
+    return clinics
+        .where(
+          (c) => keys.any(
+            (k) => '${c.name} ${c.speciality}'.toLowerCase().contains(k),
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> openClinic(Clinic clinic) => launchUrl(
+    Uri.parse(
+      'https://www.openstreetmap.org/?mlat=${clinic.lat}&mlon=${clinic.lon}#map=18/${clinic.lat}/${clinic.lon}',
+    ),
+    mode: LaunchMode.externalApplication,
+  );
+  @override
+  Widget build(BuildContext context) => AppScaffold(
+    title: '附近家醫科',
+    subtitle: '依目前位置，由近到遠顯示',
+    children: [
+      if (loading)
+        Container(
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            color: const Color(0xffd9f2ed),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: const Row(
+            children: [
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(),
+              ),
+              SizedBox(width: 16),
+              Text(
+                '正在搜尋附近的院所…',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        ),
+      if (error != null) InfoBox('$error。你可以開啟權限後再試一次。'),
+      if (error != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 14),
+          child: BigButton(
+            text: '重新搜尋',
+            icon: Icons.refresh,
+            onPressed: findClinics,
+          ),
+        ),
+      const SizedBox(height: 20),
+      Text('選擇科別', style: Theme.of(context).textTheme.headlineMedium),
+      const SizedBox(height: 12),
+      Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: ['家醫科', '牙科', '眼科', '耳鼻喉科', '骨科', '皮膚科']
+            .map(
+              (item) => ChoiceChip(
+                label: Text(item, style: const TextStyle(fontSize: 18)),
+                selected: category == item,
+                onSelected: (_) => setState(() => category = item),
+              ),
+            )
+            .toList(),
+      ),
+      const SizedBox(height: 18),
+      if (!loading && error == null && filtered.isEmpty)
+        const EmptyPanel(
+          icon: Icons.local_hospital_outlined,
+          title: '附近沒有相符資料',
+          message: '公開地圖資料可能不完整，可改選家醫科或使用地圖搜尋。',
+        ),
+      ...filtered.map(
+        (clinic) => Card(
+          child: ListTile(
+            contentPadding: const EdgeInsets.all(18),
+            leading: const CircleAvatar(
+              backgroundColor: Color(0xffd9f2ed),
+              child: Icon(Icons.local_hospital, color: teal),
+            ),
+            title: Text(
+              clinic.name,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+            subtitle: Text(
+              '${(clinic.distance / 1000).toStringAsFixed(1)} km${clinic.address.isEmpty ? '' : '\n${clinic.address}'}',
+              style: const TextStyle(fontSize: 17),
+            ),
+            trailing: const Icon(Icons.open_in_new, color: teal),
+            onTap: () => openClinic(clinic),
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      const Text(
+        '院所名稱、位置與地址來自 OpenStreetMap 公開資料，資料可能不完整或未即時更新。此功能不代表醫療推薦或診斷。',
+        style: TextStyle(fontSize: 17, color: Colors.black54),
+      ),
+    ],
   );
 }
 
@@ -2138,7 +2523,7 @@ class BigButton extends StatelessWidget {
   });
   final String text;
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   @override
   Widget build(BuildContext context) => SizedBox(
     width: double.infinity,

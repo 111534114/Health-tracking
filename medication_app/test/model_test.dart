@@ -50,6 +50,11 @@ void main() {
     expect(DoseRecord.fromJson(record.toJson()).key, '7:2026-9-24:480');
   });
 
+  test('medicine OCR text chooses a useful search line', () {
+    expect(medicineSearchCandidate('藥品\nNORVASC 5mg\n用法：每日一次'), 'NORVASC 5mg');
+    expect(medicineSearchCandidate(''), isEmpty);
+  });
+
   test('symptom guidance uses general department rules', () {
     expect(guideDepartment('我今天喉嚨痛').$1, '耳鼻喉科');
     expect(guideDepartment('皮膚發痒起紅疹').$1, '皮膚科');

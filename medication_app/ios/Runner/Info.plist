@@ -12,6 +12,12 @@
 	<string>用語音描述身體不舒服的情況</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>將您說出的症狀轉換成文字</string>
+	<key>NSCameraUsageDescription</key>
+	<string>拍攝藥袋或藥盒以辨識藥品名稱</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>選擇藥袋或藥盒照片以辨識藥品名稱</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>使用目前位置搜尋附近的家醫科與診所</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
