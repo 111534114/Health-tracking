@@ -2,6 +2,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:medication_app/main.dart';
 
 void main() {
+  test('profile stores the required name', () {
+    final profile = Profile(name: '王小明', age: 65, gender: '男');
+    final restored = Profile.fromJson(profile.toJson());
+    expect(restored.name, '王小明');
+    expect(restored.complete, isTrue);
+    expect(Profile(age: 65, gender: '男').complete, isFalse);
+  });
+
   test('health entries survive JSON serialization', () {
     final entry = HealthEntry(
       id: 1,

@@ -24,19 +24,29 @@ String dateText(DateTime d) =>
     '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
 class Profile {
-  Profile({this.age, this.gender = '', this.height, this.weight});
+  Profile({
+    this.name = '',
+    this.age,
+    this.gender = '',
+    this.height,
+    this.weight,
+  });
+  String name;
   int? age;
   String gender;
   double? height;
   double? weight;
-  bool get complete => age != null && gender.isNotEmpty;
+  bool get complete =>
+      name.trim().isNotEmpty && age != null && gender.isNotEmpty;
   Map<String, dynamic> toJson() => {
+    'name': name,
     'age': age,
     'gender': gender,
     'height': height,
     'weight': weight,
   };
   factory Profile.fromJson(Map<String, dynamic> x) => Profile(
+    name: x['name'] as String? ?? '',
     age: x['age'] as int?,
     gender: x['gender'] as String? ?? '',
     height: (x['height'] as num?)?.toDouble(),
@@ -458,6 +468,13 @@ class MyHealthPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
+                  p.name,
+                  style: const TextStyle(
+                    fontSize: 27,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                Text(
                   '${p.age} 歲　｜　${p.gender}',
                   style: const TextStyle(fontSize: 24),
                 ),
@@ -518,6 +535,7 @@ class ProfileEditor extends StatefulWidget {
 
 class _ProfileEditorState extends State<ProfileEditor> {
   final form = GlobalKey<FormState>();
+  late final name = TextEditingController(text: widget.store.profile.name);
   late final age = TextEditingController(
     text: widget.store.profile.age?.toString() ?? '',
   );
@@ -530,6 +548,7 @@ class _ProfileEditorState extends State<ProfileEditor> {
   late String gender = widget.store.profile.gender;
   @override
   void dispose() {
+    name.dispose();
     age.dispose();
     height.dispose();
     weight.dispose();
@@ -557,6 +576,17 @@ class _ProfileEditorState extends State<ProfileEditor> {
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 20),
+                  TextFormField(
+                    controller: name,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: '姓名（必填）',
+                      prefixIcon: Icon(Icons.person),
+                    ),
+                    validator: (value) =>
+                        value == null || value.trim().isEmpty ? '請填寫姓名' : null,
+                  ),
+                  const SizedBox(height: 16),
                   TextFormField(
                     controller: age,
                     keyboardType: TextInputType.number,
@@ -620,11 +650,12 @@ class _ProfileEditorState extends State<ProfileEditor> {
   Future<void> save() async {
     if (!form.currentState!.validate() || gender.isEmpty) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('請填寫年齡並選擇性別')));
+          .showSnackBar(const SnackBar(content: Text('請填寫姓名、年齡並選擇性別')));
       return;
     }
     await widget.store.saveProfile(
       Profile(
+        name: name.text.trim(),
         age: int.parse(age.text),
         gender: gender,
         height: double.tryParse(height.text),
