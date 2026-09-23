@@ -1,11 +1,11 @@
 {
-    "name": "服藥提醒與健康紀錄",
-    "short_name": "服藥提醒",
+    "name": "健康追蹤小幫手",
+    "short_name": "HealthTrack",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "服藥提醒、服藥紀錄與健康紀錄",
+    "description": "健康追蹤、趨勢圖表、語音症狀輸入與就醫科別導引",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

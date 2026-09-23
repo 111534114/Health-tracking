@@ -7,7 +7,11 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>服藥提醒</string>
+	<string>健康追蹤小幫手</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>用語音描述身體不舒服的情況</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>將您說出的症狀轉換成文字</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
