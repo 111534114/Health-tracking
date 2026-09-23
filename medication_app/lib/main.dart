@@ -1,11 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
 
 import 'web_preferences_stub.dart'
     if (dart.library.js_interop) 'web_preferences_web.dart';
@@ -22,6 +27,10 @@ const canvas = Color(0xfff5f8f7);
 String dateText(DateTime d) =>
     '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')} '
     '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+String dayKey(DateTime d) => '${d.year}-${d.month}-${d.day}';
+String clockTime(int minutes) =>
+    '${(minutes ~/ 60).toString().padLeft(2, '0')}:${(minutes % 60).toString().padLeft(2, '0')}';
 
 class Profile {
   Profile({
@@ -51,6 +60,70 @@ class Profile {
     gender: x['gender'] as String? ?? '',
     height: (x['height'] as num?)?.toDouble(),
     weight: (x['weight'] as num?)?.toDouble(),
+  );
+}
+
+class Medicine {
+  Medicine({
+    required this.id,
+    required this.name,
+    required this.dose,
+    required this.times,
+    this.active = true,
+  });
+  final int id;
+  String name;
+  String dose;
+  List<int> times;
+  bool active;
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'dose': dose,
+    'times': times,
+    'active': active,
+  };
+  factory Medicine.fromJson(Map<String, dynamic> x) => Medicine(
+    id: x['id'] as int,
+    name: x['name'] as String,
+    dose: x['dose'] as String,
+    times: (x['times'] as List).cast<int>(),
+    active: x['active'] as bool? ?? true,
+  );
+}
+
+class DoseRecord {
+  DoseRecord({
+    required this.medicineId,
+    required this.name,
+    required this.dose,
+    required this.day,
+    required this.time,
+    required this.status,
+    required this.at,
+  });
+  final int medicineId;
+  final String name, dose, day, status;
+  final int time;
+  final DateTime at;
+  String get key => '$medicineId:$day:$time';
+  Map<String, dynamic> toJson() => {
+    'medicineId': medicineId,
+    'name': name,
+    'dose': dose,
+    'day': day,
+    'time': time,
+    'status': status,
+    'at': at.toIso8601String(),
+  };
+  factory DoseRecord.fromJson(Map<String, dynamic> x) => DoseRecord(
+    medicineId: x['medicineId'] as int,
+    name: x['name'] as String,
+    dose: x['dose'] as String,
+    day: x['day'] as String,
+    time: x['time'] as int,
+    status: x['status'] as String,
+    at: DateTime.parse(x['at'] as String),
   );
 }
 
@@ -99,8 +172,12 @@ class HealthEntry {
 
 class HealthStore extends ChangeNotifier {
   final prefs = SharedPreferencesAsync();
+  final notifications = FlutterLocalNotificationsPlugin();
   Profile profile = Profile();
   final entries = <HealthEntry>[];
+  final medicines = <Medicine>[];
+  final doseRecords = <DoseRecord>[];
+  bool notificationPermission = false;
   bool ready = false;
   bool introSeen = false;
 
@@ -114,9 +191,25 @@ class HealthStore extends ChangeNotifier {
       entries.addAll(
         raw.map((e) => HealthEntry.fromJson(Map<String, dynamic>.from(e))),
       );
+      final savedMedicines =
+          jsonDecode(await prefs.getString('medicines_v2') ?? '[]') as List;
+      medicines.addAll(
+        savedMedicines.map(
+          (e) => Medicine.fromJson(Map<String, dynamic>.from(e)),
+        ),
+      );
+      final savedDoses =
+          jsonDecode(await prefs.getString('dose_records_v2') ?? '[]') as List;
+      doseRecords.addAll(
+        savedDoses.map(
+          (e) => DoseRecord.fromJson(Map<String, dynamic>.from(e)),
+        ),
+      );
       introSeen = await prefs.getBool('health_intro_v2') ?? false;
     } catch (_) {}
     entries.sort((a, b) => b.at.compareTo(a.at));
+    doseRecords.sort((a, b) => b.at.compareTo(a.at));
+    await _initializeNotifications();
     ready = true;
     notifyListeners();
   }
@@ -149,6 +242,130 @@ class HealthStore extends ChangeNotifier {
     introSeen = true;
     await prefs.setBool('health_intro_v2', true);
     notifyListeners();
+  }
+
+  Future<void> _initializeNotifications() async {
+    if (kIsWeb) return;
+    try {
+      tzdata.initializeTimeZones();
+      final zone = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(zone.identifier));
+      await notifications.initialize(
+        settings: const InitializationSettings(
+          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          iOS: DarwinInitializationSettings(
+            requestAlertPermission: false,
+            requestBadgePermission: false,
+            requestSoundPermission: false,
+          ),
+        ),
+      );
+      if (Platform.isIOS) {
+        notificationPermission =
+            await notifications
+                .resolvePlatformSpecificImplementation<
+                  IOSFlutterLocalNotificationsPlugin
+                >()
+                ?.requestPermissions(alert: true, badge: true, sound: true) ??
+            false;
+      } else if (Platform.isAndroid) {
+        notificationPermission =
+            await notifications
+                .resolvePlatformSpecificImplementation<
+                  AndroidFlutterLocalNotificationsPlugin
+                >()
+                ?.requestNotificationsPermission() ??
+            false;
+      }
+      await syncMedicationNotifications();
+    } catch (_) {
+      notificationPermission = false;
+    }
+  }
+
+  Future<void> saveMedicine(Medicine medicine) async {
+    final index = medicines.indexWhere((m) => m.id == medicine.id);
+    if (index < 0) {
+      medicines.add(medicine);
+    } else {
+      medicines[index] = medicine;
+    }
+    await _saveMedicationData();
+    await syncMedicationNotifications();
+  }
+
+  Future<void> deleteMedicine(Medicine medicine) async {
+    medicines.removeWhere((m) => m.id == medicine.id);
+    await _saveMedicationData();
+    await syncMedicationNotifications();
+  }
+
+  Future<void> markDose(Medicine medicine, int time, String status) async {
+    final key = '${medicine.id}:${dayKey(DateTime.now())}:$time';
+    doseRecords.removeWhere((r) => r.key == key);
+    doseRecords.insert(
+      0,
+      DoseRecord(
+        medicineId: medicine.id,
+        name: medicine.name,
+        dose: medicine.dose,
+        day: dayKey(DateTime.now()),
+        time: time,
+        status: status,
+        at: DateTime.now(),
+      ),
+    );
+    await _saveMedicationData();
+  }
+
+  Future<void> _saveMedicationData() async {
+    await Future.wait([
+      prefs.setString(
+        'medicines_v2',
+        jsonEncode(medicines.map((e) => e.toJson()).toList()),
+      ),
+      prefs.setString(
+        'dose_records_v2',
+        jsonEncode(doseRecords.map((e) => e.toJson()).toList()),
+      ),
+    ]);
+    notifyListeners();
+  }
+
+  Future<void> syncMedicationNotifications() async {
+    if (kIsWeb || !notificationPermission) return;
+    await notifications.cancelAll();
+    for (final medicine in medicines.where((m) => m.active)) {
+      for (var i = 0; i < medicine.times.length; i++) {
+        final minutes = medicine.times[i];
+        final now = tz.TZDateTime.now(tz.local);
+        var next = tz.TZDateTime(
+          tz.local,
+          now.year,
+          now.month,
+          now.day,
+          minutes ~/ 60,
+          minutes % 60,
+        );
+        if (!next.isAfter(now)) next = next.add(const Duration(days: 1));
+        await notifications.zonedSchedule(
+          id: medicine.id.remainder(1000000) * 10 + i,
+          title: '服藥提醒：${medicine.name}',
+          body: '${medicine.dose}・${clockTime(minutes)}',
+          scheduledDate: next,
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'medication_daily',
+              '每日服藥提醒',
+              channelDescription: '按設定時間提醒服藥',
+            ),
+            iOS: DarwinNotificationDetails(),
+          ),
+          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+          matchDateTimeComponents: DateTimeComponents.time,
+        );
+      }
+    }
   }
 
   String summary() {
@@ -352,13 +569,25 @@ class Dashboard extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text('健康追蹤小幫手', style: Theme.of(context).textTheme.headlineLarge),
+          Text(
+            '${store.profile.name}，你好',
+            style: Theme.of(context).textTheme.headlineLarge,
+          ),
           const SizedBox(height: 8),
           const Text(
-            '今天需要什麼幫忙？',
+            '今天要做什麼？',
             style: TextStyle(fontSize: 25, color: Colors.black54),
           ),
           const SizedBox(height: 26),
+          ActionCard(
+            icon: Icons.medication,
+            color: const Color(0xffe8def8),
+            title: '今日用藥',
+            subtitle: store.medicines.isEmpty
+                ? '新增藥物與每日提醒時間'
+                : '查看 ${store.medicines.length} 種藥物、已服用與略過',
+            onTap: () => open(context, MedicationPage(store: store)),
+          ),
           ActionCard(
             icon: Icons.mic,
             color: const Color(0xffd9f2ed),
@@ -437,6 +666,402 @@ class ActionCard extends StatelessWidget {
           ],
         ),
       ),
+    ),
+  );
+}
+
+class MedicationPage extends StatelessWidget {
+  const MedicationPage({super.key, required this.store});
+  final HealthStore store;
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: store,
+    builder: (_, _) {
+      final today = dayKey(DateTime.now());
+      final doses = <({Medicine medicine, int time})>[
+        for (final medicine in store.medicines.where((m) => m.active))
+          for (final time in medicine.times) (medicine: medicine, time: time),
+      ]..sort((a, b) => a.time.compareTo(b.time));
+      return AppScaffold(
+        title: '我的藥物',
+        subtitle: '今天的服藥時間與紀錄',
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: BigButton(
+                  text: '新增藥物',
+                  icon: Icons.add,
+                  onPressed: () => open(context, MedicineEditor(store: store)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: () => open(context, DoseHistoryPage(store: store)),
+                icon: const Icon(Icons.history),
+                label: const Text('紀錄', style: TextStyle(fontSize: 18)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          Text('今日用藥', style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 12),
+          if (doses.isEmpty)
+            const EmptyPanel(
+              icon: Icons.medication_outlined,
+              title: '還沒有藥物',
+              message: '按上方「新增藥物」設定藥名、劑量與服藥時間。',
+            ),
+          ...doses.map((dose) {
+            final key = '${dose.medicine.id}:$today:${dose.time}';
+            final matches = store.doseRecords.where((r) => r.key == key);
+            final status = matches.isEmpty ? null : matches.first.status;
+            return Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundColor: const Color(0xffe8def8),
+                          child: Text(
+                            clockTime(dose.time),
+                            style: const TextStyle(
+                              color: teal,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dose.medicine.name,
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              Text(
+                                dose.medicine.dose,
+                                style: const TextStyle(
+                                  fontSize: 19,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => open(
+                            context,
+                            MedicineEditor(
+                              store: store,
+                              medicine: dose.medicine,
+                            ),
+                          ),
+                          icon: const Icon(Icons.edit_outlined),
+                          tooltip: '編輯',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    if (status != null)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: status == '已服用'
+                              ? const Color(0xffd9f2ed)
+                              : const Color(0xffffedd7),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(
+                          '今日狀態：$status',
+                          style: const TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    if (status == null)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: () => store.markDose(
+                                dose.medicine,
+                                dose.time,
+                                '已服用',
+                              ),
+                              icon: const Icon(Icons.check),
+                              label: const Text(
+                                '已服用',
+                                style: TextStyle(fontSize: 18),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => store.markDose(
+                                dose.medicine,
+                                dose.time,
+                                '略過',
+                              ),
+                              child: const Text(
+                                '略過',
+                                style: TextStyle(fontSize: 18),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 12),
+          Text('藥物清單', style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 12),
+          ...store.medicines.map(
+            (medicine) => ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 8,
+              ),
+              tileColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              leading: const Icon(Icons.medication, color: teal, size: 34),
+              title: Text(
+                medicine.name,
+                style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              subtitle: Text(
+                '${medicine.dose}・${medicine.times.map(clockTime).join('、')}',
+                style: const TextStyle(fontSize: 17),
+              ),
+              trailing: Switch(
+                value: medicine.active,
+                onChanged: (v) {
+                  medicine.active = v;
+                  store.saveMedicine(medicine);
+                },
+              ),
+              onTap: () => open(
+                context,
+                MedicineEditor(store: store, medicine: medicine),
+              ),
+            ),
+          ),
+          if (!kIsWeb && !store.notificationPermission)
+            const InfoBox('請允許通知權限，手機才能在服藥時間提醒你。'),
+          if (kIsWeb)
+            const InfoBox('網頁版可管理用藥與紀錄；iPhone 背景通知需安裝 iOS App 並允許通知。'),
+        ],
+      );
+    },
+  );
+}
+
+class MedicineEditor extends StatefulWidget {
+  const MedicineEditor({super.key, required this.store, this.medicine});
+  final HealthStore store;
+  final Medicine? medicine;
+  @override
+  State<MedicineEditor> createState() => _MedicineEditorState();
+}
+
+class _MedicineEditorState extends State<MedicineEditor> {
+  final form = GlobalKey<FormState>();
+  late final name = TextEditingController(text: widget.medicine?.name ?? '');
+  late final dose = TextEditingController(text: widget.medicine?.dose ?? '');
+  late List<int> times = [...?widget.medicine?.times];
+  @override
+  void initState() {
+    super.initState();
+    if (times.isEmpty) times = [8 * 60];
+  }
+
+  @override
+  void dispose() {
+    name.dispose();
+    dose.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AppScaffold(
+    title: widget.medicine == null ? '新增藥物' : '編輯藥物',
+    subtitle: '設定藥名、劑量與每日服藥時間',
+    children: [
+      Form(
+        key: form,
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              children: [
+                TextFormField(
+                  controller: name,
+                  decoration: const InputDecoration(
+                    labelText: '藥物名稱（必填）',
+                    prefixIcon: Icon(Icons.medication),
+                  ),
+                  validator: requiredText,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: dose,
+                  decoration: const InputDecoration(
+                    labelText: '每次劑量（必填）',
+                    hintText: '例如：1 顆',
+                    prefixIcon: Icon(Icons.science),
+                  ),
+                  validator: requiredText,
+                ),
+                const SizedBox(height: 22),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '每日服藥時間',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ...times.asMap().entries.map(
+                  (entry) => ListTile(
+                    leading: const Icon(Icons.schedule, color: teal),
+                    title: Text(
+                      clockTime(entry.value),
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    onTap: () => pickTime(entry.key),
+                    trailing: times.length > 1
+                        ? IconButton(
+                            onPressed: () =>
+                                setState(() => times.removeAt(entry.key)),
+                            icon: const Icon(Icons.remove_circle_outline),
+                          )
+                        : null,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => setState(() => times.add(12 * 60)),
+                  icon: const Icon(Icons.add_alarm),
+                  label: const Text('增加時間', style: TextStyle(fontSize: 18)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      BigButton(text: '儲存藥物', icon: Icons.check_circle, onPressed: save),
+      if (widget.medicine != null)
+        TextButton.icon(
+          onPressed: delete,
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('刪除這種藥物'),
+        ),
+    ],
+  );
+  Future<void> pickTime(int index) async {
+    final current = TimeOfDay(
+      hour: times[index] ~/ 60,
+      minute: times[index] % 60,
+    );
+    final picked = await showTimePicker(context: context, initialTime: current);
+    if (picked != null) {
+      setState(() {
+        times[index] = picked.hour * 60 + picked.minute;
+        times = times.toSet().toList()..sort();
+      });
+    }
+  }
+
+  Future<void> save() async {
+    if (!form.currentState!.validate()) return;
+    await widget.store.saveMedicine(
+      Medicine(
+        id: widget.medicine?.id ?? DateTime.now().millisecondsSinceEpoch,
+        name: name.text.trim(),
+        dose: dose.text.trim(),
+        times: times..sort(),
+        active: widget.medicine?.active ?? true,
+      ),
+    );
+    if (mounted) Navigator.pop(context);
+  }
+
+  Future<void> delete() async {
+    await widget.store.deleteMedicine(widget.medicine!);
+    if (mounted) Navigator.pop(context);
+  }
+}
+
+class DoseHistoryPage extends StatelessWidget {
+  const DoseHistoryPage({super.key, required this.store});
+  final HealthStore store;
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: store,
+    builder: (_, _) => AppScaffold(
+      title: '服藥紀錄',
+      subtitle: '共 ${store.doseRecords.length} 筆資料',
+      children: store.doseRecords.isEmpty
+          ? [
+              const EmptyPanel(
+                icon: Icons.history,
+                title: '目前沒有紀錄',
+                message: '在今日用藥按下「已服用」或「略過」後，紀錄會顯示在這裡。',
+              ),
+            ]
+          : store.doseRecords
+                .map(
+                  (r) => Card(
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(18),
+                      leading: Icon(
+                        r.status == '已服用'
+                            ? Icons.check_circle
+                            : Icons.skip_next,
+                        color: r.status == '已服用' ? teal : Colors.orange,
+                        size: 38,
+                      ),
+                      title: Text(
+                        r.name,
+                        style: const TextStyle(
+                          fontSize: 21,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      subtitle: Text(
+                        '${r.day} ${clockTime(r.time)}・${r.dose}',
+                        style: const TextStyle(fontSize: 17),
+                      ),
+                      trailing: Text(
+                        r.status,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
     ),
   );
 }
@@ -1537,6 +2162,9 @@ String? positiveInt(String? value) {
   final n = int.tryParse(value?.trim() ?? '');
   return n == null || n <= 0 || n > 120 ? '請輸入正確數字' : null;
 }
+
+String? requiredText(String? value) =>
+    value == null || value.trim().isEmpty ? '此欄位為必填' : null;
 
 String? optionalNumber(String? value) {
   if (value == null || value.trim().isEmpty) return null;

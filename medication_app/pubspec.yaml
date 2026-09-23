@@ -36,6 +36,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.5
   shared_preferences_web: ^2.4.3
+  flutter_local_notifications: ^22.3.1
+  flutter_timezone: ^5.1.0
+  timezone: ^0.11.1
   speech_to_text: ^7.5.0
   flutter_tts: ^4.2.5
 

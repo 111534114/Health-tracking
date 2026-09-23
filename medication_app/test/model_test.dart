@@ -27,6 +27,29 @@ void main() {
     expect(restored.mood, '不錯');
   });
 
+  test('medicine and dose records survive JSON serialization', () {
+    final medicine = Medicine(
+      id: 7,
+      name: '血壓藥',
+      dose: '1 顆',
+      times: [480, 1200],
+    );
+    final restored = Medicine.fromJson(medicine.toJson());
+    expect(restored.times, [480, 1200]);
+    expect(clockTime(restored.times.first), '08:00');
+
+    final record = DoseRecord(
+      medicineId: 7,
+      name: '血壓藥',
+      dose: '1 顆',
+      day: '2026-9-24',
+      time: 480,
+      status: '已服用',
+      at: DateTime(2026, 9, 24, 8),
+    );
+    expect(DoseRecord.fromJson(record.toJson()).key, '7:2026-9-24:480');
+  });
+
   test('symptom guidance uses general department rules', () {
     expect(guideDepartment('我今天喉嚨痛').$1, '耳鼻喉科');
     expect(guideDepartment('皮膚發痒起紅疹').$1, '皮膚科');
